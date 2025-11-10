@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include "r200.h"
+#include "R200.h"
 
 // Constructor
 R200::R200() {};
@@ -38,7 +38,7 @@ void printHexWord(char* name, uint8_t MSB, uint8_t LSB){
 }
 
 void R200::loop(){
-  // Has any new data been received?      
+  // Has any new data been received?
   if(dataAvailable()){
     // Attempt to receive a full frame of data
     if(receiveData()){
@@ -60,7 +60,7 @@ void R200::loop(){
             break;
           case CMD_SinglePollInstruction:
             // Example successful response
-            // AA 02 22 00 11 C7 30 00 E2 80 68 90 00 00 50 0E 88 C6 A4 A7 11 9B 29 DD 
+            // AA 02 22 00 11 C7 30 00 E2 80 68 90 00 00 50 0E 88 C6 A4 A7 11 9B 29 DD
             // AA:Frame Header
             // 02:Instruction Code
             // 22:Command Parameter
@@ -163,7 +163,7 @@ bool R200::dataAvailable(){
 
 /*
  * Dumps the most recently read UID to the serial output
- */ 
+ */
 void R200::dumpUIDToSerial(){
   // Serial.print("Dumping UID...");
   Serial.print("0x");
@@ -319,6 +319,149 @@ void R200::setMultiplePollingMode(bool enable){
     commandFrame[6] = R200_FrameEnd;
     _serial->write(commandFrame, 7);
   }
+}
+
+/**
+ * Get the current transmit power from the reader
+ * Returns power in dBm (float)
+ * Returns -1.0 if operation fails
+ */
+float R200::getPower(){
+  flush();
+  uint8_t commandFrame[7] = {0};
+  commandFrame[0] = R200_FrameHeader;
+  commandFrame[1] = FrameType_Command;
+  commandFrame[2] = CMD_AcquireTransmitPower;
+  commandFrame[3] = 0x00; // ParamLen MSB
+  commandFrame[4] = 0x00; // ParamLen LSB
+  commandFrame[5] = 0xB7; // Checksum (0xB7 for this command)
+  commandFrame[6] = R200_FrameEnd;
+
+  _serial->write(commandFrame, 7);
+
+  if(receiveData()){
+    if(dataIsValid()){
+      if(_buffer[R200_CommandPos] == CMD_AcquireTransmitPower){
+        // Response contains 2 bytes: MSB and LSB representing power * 100
+        uint16_t powerValue = (_buffer[R200_ParamPos] << 8) | _buffer[R200_ParamPos + 1];
+        return powerValue / 100.0;
+      }
+    }
+  }
+  return -1.0;
+}
+
+/**
+ * Set the transmit power of the reader
+ * power: float value in dBm (e.g., 20.5 for 20.5 dBm)
+ * Returns true if successful, false otherwise
+ * Note: tested modules only support values from 15 to 26 dBm
+ */
+bool R200::setPower(float power){
+  flush();
+  // Convert float to integer (multiply by 100)
+  uint16_t powerValue = (uint16_t)(power * 100);
+
+  uint8_t commandFrame[9] = {0};
+  commandFrame[0] = R200_FrameHeader;
+  commandFrame[1] = FrameType_Command;
+  commandFrame[2] = CMD_SetTransmitPower;
+  commandFrame[3] = 0x00; // ParamLen MSB
+  commandFrame[4] = 0x02; // ParamLen LSB (2 bytes for power value)
+  commandFrame[5] = (powerValue >> 8) & 0xFF; // MSB
+  commandFrame[6] = powerValue & 0xFF; // LSB
+
+  // Calculate checksum: sum of type + command + param length MSB + param length LSB + params
+  uint16_t checksum = FrameType_Command + CMD_SetTransmitPower + 0x00 + 0x02 + commandFrame[5] + commandFrame[6];
+  commandFrame[7] = checksum & 0xFF;
+
+  commandFrame[8] = R200_FrameEnd;
+
+  _serial->write(commandFrame, 9);
+
+  if(receiveData()){
+    if(dataIsValid()){
+      if(_buffer[R200_CommandPos] == CMD_SetTransmitPower){
+        // Check if response params contain [0] indicating success
+        return (_buffer[R200_ParamPos] == 0);
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Get demodulator parameters from the reader
+ * mixer_g: mixer gain
+ * if_g: IF gain
+ * thrd: signal demodulation threshold
+ * Returns true if successful, false otherwise
+ */
+bool R200::getDemodulatorParams(uint8_t &mixer_g, uint8_t &if_g, uint16_t &thrd){
+  flush();
+  uint8_t commandFrame[7] = {0};
+  commandFrame[0] = R200_FrameHeader;
+  commandFrame[1] = FrameType_Command;
+  commandFrame[2] = CMD_GetReceiverDemodulatorParameters;
+  commandFrame[3] = 0x00; // ParamLen MSB
+  commandFrame[4] = 0x00; // ParamLen LSB
+  commandFrame[5] = 0xF1; // Checksum
+  commandFrame[6] = R200_FrameEnd;
+
+  _serial->write(commandFrame, 7);
+
+  if(receiveData()){
+    if(dataIsValid()){
+      if(_buffer[R200_CommandPos] == CMD_GetReceiverDemodulatorParameters){
+        // Response format: [mixer_g] [if_g] [thrd_MSB] [thrd_LSB]
+        mixer_g = _buffer[R200_ParamPos];
+        if_g = _buffer[R200_ParamPos + 1];
+        thrd = (_buffer[R200_ParamPos + 2] << 8) | _buffer[R200_ParamPos + 3];
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Set demodulator parameters on the reader
+ * mixer_g: mixer gain
+ * if_g: IF gain
+ * thrd: signal demodulation threshold
+ * Returns true if successful, false otherwise
+ */
+bool R200::setDemodulatorParams(uint8_t mixer_g, uint8_t if_g, uint16_t thrd){
+  flush();
+  uint8_t commandFrame[11] = {0};
+  commandFrame[0] = R200_FrameHeader;
+  commandFrame[1] = FrameType_Command;
+  commandFrame[2] = CMD_SetReceiverDemodulatorParameters;
+  commandFrame[3] = 0x00; // ParamLen MSB
+  commandFrame[4] = 0x04; // ParamLen LSB (4 bytes: mixer_g, if_g, thrd_MSB, thrd_LSB)
+  commandFrame[5] = mixer_g;
+  commandFrame[6] = if_g;
+  commandFrame[7] = (thrd >> 8) & 0xFF; // thrd MSB
+  commandFrame[8] = thrd & 0xFF; // thrd LSB
+
+  // Calculate checksum: sum of type + command + param length MSB + param length LSB + params
+  uint16_t checksum = FrameType_Command + CMD_SetReceiverDemodulatorParameters + 0x00 + 0x04 +
+                      mixer_g + if_g + commandFrame[7] + commandFrame[8];
+  commandFrame[9] = checksum & 0xFF;
+
+  commandFrame[10] = R200_FrameEnd;
+
+  _serial->write(commandFrame, 11);
+
+  if(receiveData()){
+    if(dataIsValid()){
+      if(_buffer[R200_CommandPos] == CMD_SetReceiverDemodulatorParameters){
+        // Check if response params contain [0] indicating success
+        return (_buffer[R200_ParamPos] == 0);
+      }
+    }
+  }
+  return false;
 }
 
 uint8_t R200::calculateCheckSum(uint8_t *buffer){

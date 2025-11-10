@@ -40,6 +40,13 @@ class R200 {
     //bool isCardPresent();
     void dumpUIDToSerial();
 
+    // Power management functions
+    float getPower();
+    bool setPower(float power);
+
+    // Demodulator parameter functions
+    bool getDemodulatorParams(uint8_t &mixer_g, uint8_t &if_g, uint16_t &thrd);
+    bool setDemodulatorParams(uint8_t mixer_g, uint8_t if_g, uint16_t thrd);
 
 
  // Commands sent to the reader, and responses received back, are sent as data frames, e.g.
