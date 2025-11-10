@@ -22,6 +22,13 @@ void setup() {
   // Get info
   rfid.dumpModuleInfo();
 
+  // Add a small pause and buffer cleaning
+  delay(100);
+
+  while(rfid.dataAvailable()) {
+    rfid.loop(); // Process any pending response
+  }
+
   // Test functions
   tests();
 }

@@ -316,6 +316,7 @@ void R200::setMultiplePollingMode(bool enable){
  * Returns -1.0 if operation fails
  */
 float R200::getPower(){
+  flush();
   uint8_t commandFrame[7] = {0};
   commandFrame[0] = R200_FrameHeader;
   commandFrame[1] = FrameType_Command;
@@ -346,6 +347,7 @@ float R200::getPower(){
  * Note: tested modules only support values from 15 to 26 dBm
  */
 bool R200::setPower(float power){
+  flush();
   // Convert float to integer (multiply by 100)
   uint16_t powerValue = (uint16_t)(power * 100);
 
@@ -385,6 +387,7 @@ bool R200::setPower(float power){
  * Returns true if successful, false otherwise
  */
 bool R200::getDemodulatorParams(uint8_t &mixer_g, uint8_t &if_g, uint16_t &thrd){
+  flush();
   uint8_t commandFrame[7] = {0};
   commandFrame[0] = R200_FrameHeader;
   commandFrame[1] = FrameType_Command;
@@ -418,6 +421,7 @@ bool R200::getDemodulatorParams(uint8_t &mixer_g, uint8_t &if_g, uint16_t &thrd)
  * Returns true if successful, false otherwise
  */
 bool R200::setDemodulatorParams(uint8_t mixer_g, uint8_t if_g, uint16_t thrd){
+  flush();
   uint8_t commandFrame[11] = {0};
   commandFrame[0] = R200_FrameHeader;
   commandFrame[1] = FrameType_Command;
