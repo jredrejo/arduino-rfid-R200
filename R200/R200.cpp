@@ -44,9 +44,6 @@ void R200::loop() {
     if (receiveData()) {
       if (dataIsValid()) {
         // If a full frame of data has been received, parse it
-        // TODO For reasons that I absolutely cannot fathom, this section does not work if moved into
-        // a separate function....
-        // parseReceivedData();
         switch (_buffer[R200_CommandPos]) {
           case CMD_GetModuleInfo:
             for (uint8_t i = 0; i < RX_BUFFER_LENGTH - 8; i++) {
@@ -58,6 +55,7 @@ void R200::loop() {
             }
             Serial.println("");
             break;
+
           case CMD_SinglePollInstruction:
 // Example successful response
 // AA 02 22 00 11 C7 30 00 E2 80 68 90 00 00 50 0E 88 C6 A4 A7 11 9B 29 DD
@@ -65,19 +63,19 @@ void R200::loop() {
 // 02:Instruction Code
 // 22:Command Parameter
 // 00 11:Instruction data length (0x11 = 17 bytes)
-// C7：RSSI Signal Strength
+// C7:RSSI Signal Strength
 // 30 00: Label PC code (factory reg code)
-// E2 80 68 90 00 00 50 0E 88 C6 A4 A7：EPC code
+// E2 80 68 90 00 00 50 0E 88 C6 A4 A7:EPC code
 // 11 9B:CRC check
 // 29: Verification
 // DD: End of frame
 #ifdef DEBUG
-            printHexByte("RSSI", _buffer[6]);
-            printHexWord("PC", _buffer[7], _buffer[8]);
-            printHexBytes("EPC(", &_buffer[9], 12);
+            printHexByte("RSSI", _buffer[5]);
+            printHexWord("PC", _buffer[6], _buffer[7]);
+            printHexBytes("EPC", &_buffer[8], 12);
 #endif
-            if (memcmp(uid, &_buffer[9], 12) != 0) {
-              memcpy(uid, &_buffer[9], 12);
+            if (memcmp(uid, &_buffer[8], 12) != 0) {
+              memcpy(uid, &_buffer[8], 12);
 #ifdef DEBUG
               Serial.print("New card detected : ");
               dumpUIDToSerial();
@@ -94,6 +92,7 @@ void R200::loop() {
             printHexWord("CRC", _buffer[20], _buffer[21]);
 #endif
             break;
+
           case CMD_ExecutionFailure:
             switch (_buffer[R200_ParamPos]) {
               case ERR_CommandError:
@@ -128,6 +127,10 @@ void R200::loop() {
             }
             break;
         }
+
+        // Clear the buffer after successful processing
+        // This prevents the same frame from being processed multiple times
+        memset(_buffer, 0, RX_BUFFER_LENGTH);
       }
     }
   }
@@ -135,10 +138,14 @@ void R200::loop() {
 
 // Has any data been received from the reader?
 bool R200::dataIsValid() {
-  // Serial.println("Checking Data Valid");
-  // dumpReceiveBufferToSerial();
+#ifdef DEBUG
+  Serial.println("Checking Data Valid");
+  dumpReceiveBufferToSerial();
+#endif
   uint8_t CRC = calculateCheckSum(_buffer);
-
+  uint8_t command = _buffer[2];
+  // FF= no label return is received or data CRC verification error
+  if (command == 255) { return false; }
   // NOTE
   // You can't just be smart and do this in one line, because
   // the pointer reference f*cks up.
@@ -148,9 +155,11 @@ bool R200::dataIsValid() {
   paramLength += _buffer[4];
   uint8_t CRCpos = 5 + paramLength;
 
-  // Serial.print(CRC, HEX);
-  // Serial.print(":");
-  // Serial.println(_buffer[CRCpos], HEX);
+#ifdef DEBUG
+  Serial.print(CRC, HEX);
+  Serial.print(":");
+  Serial.println(_buffer[CRCpos], HEX);
+#endif
   return (CRC == _buffer[CRCpos]);
 }
 
@@ -216,6 +225,8 @@ uint8_t R200::flush() {
     _serial->read();
     bytesDiscarded++;
   }
+  // Also clear our internal buffer
+  memset(_buffer, 0, RX_BUFFER_LENGTH);
   return bytesDiscarded;
 }
 
@@ -224,43 +235,53 @@ uint8_t R200::flush() {
 // (e.g. when set to automatic polling mode)
 // Returns true if a complete frame of data is read within the allotted timeout
 bool R200::receiveData(unsigned long timeOut) {
-  //Serial.println("Receiving Data");
   unsigned long startTime = millis();
   uint8_t bytesReceived = 0;
+
   // Clear the buffer
-  //memset(_buffer, 0, sizeof _buffer);
-  for (int i = 0; i < RX_BUFFER_LENGTH; i++) { _buffer[i] = 0; }
+  memset(_buffer, 0, RX_BUFFER_LENGTH);
+
   while ((millis() - startTime) < timeOut) {
-    while (_serial->available()) {
+    if (_serial->available()) {
       uint8_t b = _serial->read();
+
       if (bytesReceived > RX_BUFFER_LENGTH - 1) {
         // Buffer overflow - flush everything and start over
         Serial.print("Error: Max Buffer Length Exceeded!");
         flush();
         bytesReceived = 0;
         // Clear buffer again
-        for (int i = 0; i < RX_BUFFER_LENGTH; i++) { _buffer[i] = 0; }
+        for (int i = 0; i < RX_BUFFER_LENGTH; i++) {
+          _buffer[i] = 0;
+        }
         return false;
       } else {
         _buffer[bytesReceived] = b;
       }
+
       bytesReceived++;
-      if (b == R200_FrameEnd) { break; }
+
+      // Exit early once we have a complete frame
+      // Check for frame end marker and ensure we have at least header + frame end
+      if (b == R200_FrameEnd && bytesReceived > 1) {
+        // Verify frame starts with correct header
+        if (_buffer[0] == R200_FrameHeader) {
+          return true;  // Frame is complete, exit immediately
+        }
+      }
     }
   }
+
+  // Timeout reached - validate what we have
   if (bytesReceived > 1 && _buffer[0] == R200_FrameHeader && _buffer[bytesReceived - 1] == R200_FrameEnd) {
     return true;
   } else {
+    if (bytesReceived > 0) {
+      // Flush remaining data in serial buffer
+      flush();
+    }
     return false;
   }
-
-  // Timeout reached without valid frame
-  if (bytesReceived > 0) {
-    // Flush remaining data in serial buffer
-    flush();
-  }
-
-  return false;
 }
 
 void R200::dumpModuleInfo() {
@@ -317,6 +338,7 @@ void R200::setMultiplePollingMode(bool enable) {
     _serial->write(commandFrame, 7);
   }
 }
+
 
 /**
  * Get the current transmit power from the reader
@@ -459,6 +481,7 @@ bool R200::setDemodulatorParams(uint8_t mixer_g, uint8_t if_g, uint16_t thrd) {
   }
   return false;
 }
+
 
 uint8_t R200::calculateCheckSum(uint8_t *buffer) {
   // Extract how many parameters there are in the buffer

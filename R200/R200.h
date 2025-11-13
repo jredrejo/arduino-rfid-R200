@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include <Arduino.h>
 
-#define RX_BUFFER_LENGTH 256
+#define RX_BUFFER_LENGTH 512
 
 class R200 {
 
