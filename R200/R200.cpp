@@ -142,7 +142,6 @@ bool R200::dataIsValid() {
   Serial.println("Checking Data Valid");
   dumpReceiveBufferToSerial();
 #endif
-  uint8_t CRC = calculateCheckSum(_buffer);
   uint8_t command = _buffer[2];
   // FF= no label return is received or data CRC verification error
   if (command == 255) { return false; }
@@ -155,9 +154,19 @@ bool R200::dataIsValid() {
   paramLength += _buffer[4];
   uint8_t CRCpos = 5 + paramLength;
 
+  // CRITICAL: Bounds check - prevent buffer overflow
+  if (CRCpos >= RX_BUFFER_LENGTH) {
 #ifdef DEBUG
+    Serial.println("Error: CRC position out of bounds!");
+#endif
+    return false;
+  }
+
+  uint8_t CRC = calculateCheckSum(_buffer);
+#ifdef DEBUG
+  Serial.print("Calculated CRC: 0x");
   Serial.print(CRC, HEX);
-  Serial.print(":");
+  Serial.print(" | Received CRC: 0x");
   Serial.println(_buffer[CRCpos], HEX);
 #endif
   return (CRC == _buffer[CRCpos]);
@@ -214,6 +223,7 @@ bool R200::parseReceivedData() {
     default:
       break;
   }
+  return true;
 }
 
 /*
@@ -251,9 +261,7 @@ bool R200::receiveData(unsigned long timeOut) {
         flush();
         bytesReceived = 0;
         // Clear buffer again
-        for (int i = 0; i < RX_BUFFER_LENGTH; i++) {
-          _buffer[i] = 0;
-        }
+        memset(_buffer, 0, RX_BUFFER_LENGTH);
         return false;
       } else {
         _buffer[bytesReceived] = b;
@@ -263,25 +271,24 @@ bool R200::receiveData(unsigned long timeOut) {
 
       // Exit early once we have a complete frame
       // Check for frame end marker and ensure we have at least header + frame end
-      if (b == R200_FrameEnd && bytesReceived > 1) {
+      if (b == R200_FrameEnd && bytesReceived >= 7) {
         // Verify frame starts with correct header
         if (_buffer[0] == R200_FrameHeader) {
-          return true;  // Frame is complete, exit immediately
+          // Additional validation: verify paramLength matches frame size
+          uint16_t paramLength = (_buffer[3] << 8) + _buffer[4];
+          if (bytesReceived == (paramLength + 7)) {
+            return true;  // Frame is complete, exit immediately
+          }
         }
       }
     }
   }
 
-  // Timeout reached - validate what we have
-  if (bytesReceived > 1 && _buffer[0] == R200_FrameHeader && _buffer[bytesReceived - 1] == R200_FrameEnd) {
-    return true;
-  } else {
-    if (bytesReceived > 0) {
-      // Flush remaining data in serial buffer
-      flush();
-    }
-    return false;
+  // Timeout reached
+  if (bytesReceived > 0) {
+    flush();
   }
+  return false;
 }
 
 void R200::dumpModuleInfo() {
@@ -358,9 +365,10 @@ float R200::getPower() {
 
   _serial->write(commandFrame, 7);
 
-  if (receiveData()) {
-    if (dataIsValid()) {
-      if (_buffer[R200_CommandPos] == CMD_AcquireTransmitPower) {
+    // Retry 3 times logic for reliability
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (receiveData(500)) {
+      if (dataIsValid() && _buffer[R200_CommandPos] == CMD_AcquireTransmitPower) {
         // Response contains 2 bytes: MSB and LSB representing power * 100
         uint16_t powerValue = (_buffer[R200_ParamPos] << 8) | _buffer[R200_ParamPos + 1];
         return powerValue / 100.0;
@@ -398,14 +406,15 @@ bool R200::setPower(float power) {
 
   _serial->write(commandFrame, 9);
 
-  if (receiveData()) {
-    if (dataIsValid()) {
-      if (_buffer[R200_CommandPos] == CMD_SetTransmitPower) {
-        // Check if response params contain [0] indicating success
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (receiveData(500)) {
+      if (dataIsValid() && _buffer[R200_CommandPos] == CMD_SetTransmitPower) {
+         // Check if response params contain [0] indicating success
         return (_buffer[R200_ParamPos] == 0);
       }
     }
   }
+
   return false;
 }
 
@@ -429,9 +438,9 @@ bool R200::getDemodulatorParams(uint8_t &mixer_g, uint8_t &if_g, uint16_t &thrd)
 
   _serial->write(commandFrame, 7);
 
-  if (receiveData()) {
-    if (dataIsValid()) {
-      if (_buffer[R200_CommandPos] == CMD_GetReceiverDemodulatorParameters) {
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (receiveData(500)) {
+      if (dataIsValid() && _buffer[R200_CommandPos] == CMD_GetReceiverDemodulatorParameters) {
         // Response format: [mixer_g] [if_g] [thrd_MSB] [thrd_LSB]
         mixer_g = _buffer[R200_ParamPos];
         if_g = _buffer[R200_ParamPos + 1];
@@ -440,6 +449,7 @@ bool R200::getDemodulatorParams(uint8_t &mixer_g, uint8_t &if_g, uint16_t &thrd)
       }
     }
   }
+
   return false;
 }
 
@@ -471,9 +481,9 @@ bool R200::setDemodulatorParams(uint8_t mixer_g, uint8_t if_g, uint16_t thrd) {
 
   _serial->write(commandFrame, 11);
 
-  if (receiveData()) {
-    if (dataIsValid()) {
-      if (_buffer[R200_CommandPos] == CMD_SetReceiverDemodulatorParameters) {
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (receiveData(500)) {
+      if (dataIsValid() && _buffer[R200_CommandPos] == CMD_SetReceiverDemodulatorParameters) {
         // Check if response params contain [0] indicating success
         return (_buffer[R200_ParamPos] == 0);
       }
